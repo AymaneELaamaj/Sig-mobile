@@ -73,6 +73,79 @@ class DatabaseHelper {
     return result.map((json) => Construction.fromMap(json)).toList();
   }
 
+  // Lire une construction par ID
+  Future<Construction?> readConstruction(int id) async {
+    final db = await instance.database;
+    final maps = await db.query(
+      'constructions',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+
+    if (maps.isNotEmpty) {
+      return Construction.fromMap(maps.first);
+    }
+    return null;
+  }
+
+  // Mettre à jour une construction
+  Future<int> update(Construction construction) async {
+    final db = await instance.database;
+    return await db.update(
+      'constructions',
+      construction.toMap(),
+      where: 'id = ?',
+      whereArgs: [construction.id],
+    );
+  }
+
+  // Supprimer une construction
+  Future<int> delete(int id) async {
+    final db = await instance.database;
+    return await db.delete(
+      'constructions',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  // Supprimer toutes les constructions
+  Future<int> deleteAll() async {
+    final db = await instance.database;
+    return await db.delete('constructions');
+  }
+
+  // Rechercher des constructions par type
+  Future<List<Construction>> searchByType(String type) async {
+    final db = await instance.database;
+    final result = await db.query(
+      'constructions',
+      where: 'type = ?',
+      whereArgs: [type],
+    );
+
+    return result.map((json) => Construction.fromMap(json)).toList();
+  }
+
+  // Rechercher des constructions par mot-clé (adresse ou contact)
+  Future<List<Construction>> search(String keyword) async {
+    final db = await instance.database;
+    final result = await db.query(
+      'constructions',
+      where: 'adresse LIKE ? OR contact LIKE ?',
+      whereArgs: ['%$keyword%', '%$keyword%'],
+    );
+
+    return result.map((json) => Construction.fromMap(json)).toList();
+  }
+
+  // Compter le nombre de constructions
+  Future<int> count() async {
+    final db = await instance.database;
+    final result = await db.rawQuery('SELECT COUNT(*) as count FROM constructions');
+    return result.first['count'] as int;
+  }
+
   // Fermer la base
   Future close() async {
     final db = await instance.database;
