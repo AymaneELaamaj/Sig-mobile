@@ -13,6 +13,7 @@ import '../widgets/construction_popup.dart';
 import '../widgets/gps_indicator_widget.dart';
 import 'add_construction_screen.dart';
 import 'construction_list_screen.dart';
+import 'tour_planning_screen.dart';
 
 /// Écran principal de la carte SIG
 /// 
@@ -701,8 +702,24 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       // FAB amélioré
       floatingActionButton: EnhancedFAB(
         onAddPolygon: _addConstruction,
+        onPlanTour: _openTourPlanning,
       ),
     );
+  }
+
+  /// Ouvrir l'écran de planification de tournée
+  void _openTourPlanning() async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const TourPlanningScreen(),
+      ),
+    );
+    
+    // Rafraîchir les données si une tournée a été effectuée
+    if (result == true) {
+      _refreshConstructions();
+    }
   }
 
   /// AppBar personnalisée

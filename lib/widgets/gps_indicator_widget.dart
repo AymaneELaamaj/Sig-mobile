@@ -192,6 +192,7 @@ Marker createGPSMarker({
 /// un BottomSheet avec plusieurs options :
 /// - Ajouter une construction par polygone
 /// - Ajouter un point GPS simple
+/// - Planifier une tournée
 /// - Autres options personnalisables
 class EnhancedFAB extends StatelessWidget {
   /// Callback pour ajouter une construction avec polygone
@@ -202,12 +203,16 @@ class EnhancedFAB extends StatelessWidget {
   
   /// Callback pour importer des données
   final VoidCallback? onImport;
+  
+  /// Callback pour planifier une tournée
+  final VoidCallback? onPlanTour;
 
   const EnhancedFAB({
     super.key,
     required this.onAddPolygon,
     this.onAddPoint,
     this.onImport,
+    this.onPlanTour,
   });
 
   @override
@@ -215,7 +220,7 @@ class EnhancedFAB extends StatelessWidget {
     return FloatingActionButton.extended(
       onPressed: () => _showOptionsSheet(context),
       icon: const Icon(Icons.add_location_alt),
-      label: const Text('Nouvelle'),
+      label: const Text('Actions'),
       backgroundColor: Colors.blue,
       foregroundColor: Colors.white,
       elevation: 6,
@@ -251,10 +256,10 @@ class EnhancedFAB extends StatelessWidget {
             // Titre
             const Row(
               children: [
-                Icon(Icons.add_location_alt, color: Colors.blue, size: 28),
+                Icon(Icons.apps, color: Colors.blue, size: 28),
                 SizedBox(width: 12),
                 Text(
-                  'Ajouter une construction',
+                  'Actions',
                   style: TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.bold,
@@ -264,7 +269,7 @@ class EnhancedFAB extends StatelessWidget {
             ),
             const SizedBox(height: 24),
             
-            // Options
+            // Option: Dessiner polygone
             _OptionTile(
               icon: Icons.pentagon,
               title: 'Dessiner un polygone',
@@ -275,6 +280,21 @@ class EnhancedFAB extends StatelessWidget {
                 onAddPolygon();
               },
             ),
+            
+            // Option: Planifier une tournée
+            if (onPlanTour != null) ...[
+              const SizedBox(height: 12),
+              _OptionTile(
+                icon: Icons.route,
+                title: 'Planifier une tournée',
+                subtitle: 'Organiser et optimiser votre itinéraire de visite',
+                color: Colors.blue,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  onPlanTour!();
+                },
+              ),
+            ],
             
             if (onAddPoint != null) ...[
               const SizedBox(height: 12),
