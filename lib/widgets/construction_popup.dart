@@ -6,7 +6,7 @@ import '../models/construction.dart';
 /// Affiche un bottom sheet avec :
 /// - En-tête avec icône et type coloré
 /// - Informations détaillées (adresse, contact, superficie)
-/// - Boutons d'action (Centrer, Modifier, Supprimer)
+/// - Boutons d'action (Centrer, Itinéraire, Modifier, Supprimer)
 /// 
 /// Design Material 3 avec coins arrondis et ombres
 class ConstructionPopup extends StatelessWidget {
@@ -24,6 +24,9 @@ class ConstructionPopup extends StatelessWidget {
   
   /// Callback pour fermer le popup
   final VoidCallback onClose;
+  
+  /// Callback pour calculer l'itinéraire
+  final VoidCallback? onRoute;
 
   const ConstructionPopup({
     super.key,
@@ -32,6 +35,7 @@ class ConstructionPopup extends StatelessWidget {
     this.onEdit,
     required this.onDelete,
     required this.onClose,
+    this.onRoute,
   });
 
   /// Afficher le popup sous forme de bottom sheet
@@ -41,6 +45,7 @@ class ConstructionPopup extends StatelessWidget {
     required VoidCallback onCenter,
     VoidCallback? onEdit,
     required VoidCallback onDelete,
+    VoidCallback? onRoute,
   }) {
     showModalBottomSheet(
       context: context,
@@ -63,6 +68,12 @@ class ConstructionPopup extends StatelessWidget {
           onDelete();
         },
         onClose: () => Navigator.pop(ctx),
+        onRoute: onRoute != null
+            ? () {
+                Navigator.pop(ctx);
+                onRoute();
+              }
+            : null,
       ),
     );
   }
@@ -268,27 +279,50 @@ class ConstructionPopup extends StatelessWidget {
   Widget _buildActions(BuildContext context, Color color) {
     return Column(
       children: [
-        // Bouton centrer (principal)
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            onPressed: onCenter,
-            icon: const Icon(Icons.center_focus_strong),
-            label: const Text('Centrer sur la carte'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: color,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
+        // Ligne 1: Centrer, Itinéraire et 3D
+        Row(
+          children: [
+            // Bouton centrer
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: onCenter,
+                icon: const Icon(Icons.center_focus_strong),
+                label: const Text('Centrer'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: color,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
               ),
             ),
-          ),
+            
+            const SizedBox(width: 12),
+            
+            // Bouton itinéraire
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: onRoute,
+                icon: const Icon(Icons.directions),
+                label: const Text('Itinéraire'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: onRoute != null ? Colors.blue : Colors.grey,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
         
         const SizedBox(height: 12),
         
-        // Boutons secondaires
+        // Ligne 2: Modifier et Supprimer
         Row(
           children: [
             // Bouton modifier (si disponible)
@@ -364,6 +398,7 @@ class ConstructionPopup extends StatelessWidget {
         return Icons.place;
     }
   }
+
 }
 
 /// Ligne d'information avec icône, label et valeur

@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import '../models/tour.dart';
+import '../models/route_info.dart';
 
 /// Service de routage utilisant OSRM (Open Source Routing Machine)
 /// 
@@ -11,8 +12,93 @@ import '../models/tour.dart';
 /// - Optimisation de tournées (TSP)
 /// - Instructions de navigation
 class RoutingService {
-  // OSRM public server (utiliser votre propre serveur en production)
+  // URLs des serveurs OSRM par mode de transport
   static const String _baseUrl = 'https://router.project-osrm.org';
+
+  /// Calculer un itinéraire complet avec mode de transport
+  static Future<RouteInfo?> calculateRoute(
+    LatLng start,
+    LatLng end, {
+    TravelMode travelMode = TravelMode.driving,
+  }) async {
+    try {
+      // OSRM public ne supporte que driving, mais on ajuste les temps estimés
+      // pour les autres modes de transport
+      final url = '$_baseUrl/route/v1/driving/'
+          '${start.longitude},${start.latitude};'
+          '${end.longitude},${end.latitude}'
+          '?overview=full&geometries=geojson&steps=true&annotations=true';
+
+      print('Routing URL: $url'); // Debug
+
+      final response = await http.get(Uri.parse(url)).timeout(
+        const Duration(seconds: 15),
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        
+        if (data['code'] == 'Ok' && data['routes'].isNotEmpty) {
+          final route = data['routes'][0];
+          final geometry = route['geometry']['coordinates'] as List;
+          
+          // Convertir les coordonnées GeoJSON en LatLng
+          List<LatLng> polylinePoints = geometry
+              .map<LatLng>((coord) => LatLng(
+                    coord[1].toDouble(),
+                    coord[0].toDouble(),
+                  ))
+              .toList();
+
+          // Extraire les instructions
+          List<NavigationStep> instructions = [];
+          if (route['legs'] != null && route['legs'].isNotEmpty) {
+            final steps = route['legs'][0]['steps'] as List;
+            instructions = steps
+                .map<NavigationStep>((step) => NavigationStep.fromOSRM(step))
+                .toList();
+          }
+
+          // Distance de base (celle retournée par OSRM)
+          double distanceMeters = (route['distance'] as num).toDouble();
+          double durationSeconds = (route['duration'] as num).toDouble();
+          
+          // Ajuster la durée selon le mode de transport
+          // Vitesses moyennes approximatives :
+          // - Voiture : ~50 km/h en ville (valeur OSRM)
+          // - Vélo : ~15 km/h
+          // - À pied : ~5 km/h
+          switch (travelMode) {
+            case TravelMode.driving:
+              // Utiliser la durée OSRM telle quelle
+              break;
+            case TravelMode.cycling:
+              // Vélo : environ 3.3x plus lent que voiture
+              durationSeconds = distanceMeters / (15 * 1000 / 3600); // 15 km/h
+              break;
+            case TravelMode.walking:
+              // À pied : environ 10x plus lent que voiture
+              durationSeconds = distanceMeters / (5 * 1000 / 3600); // 5 km/h
+              break;
+          }
+
+          return RouteInfo(
+            polylinePoints: polylinePoints,
+            distanceMeters: distanceMeters,
+            durationSeconds: durationSeconds,
+            instructions: instructions,
+            origin: start,
+            destination: end,
+            travelMode: travelMode,
+          );
+        }
+      }
+      return null;
+    } catch (e) {
+      print('Erreur de routing: $e');
+      return null;
+    }
+  }
   
   /// Calculer un itinéraire entre deux points
   static Future<RouteSegment?> getRoute(LatLng start, LatLng end) async {

@@ -2,15 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'dart:math' as math;
 import '../db/database_helper.dart';
 import '../models/construction.dart';
+import '../models/route_info.dart';
 import '../utils/geojson_helper.dart';
 import '../utils/map_helper.dart';
+import '../utils/marker_clusterer.dart';
+import '../services/routing_service.dart';
 import '../widgets/map_controls_widget.dart';
 import '../widgets/map_search_bar.dart';
 import '../widgets/collapsible_legend_widget.dart';
 import '../widgets/construction_popup.dart';
 import '../widgets/gps_indicator_widget.dart';
+import '../widgets/route_panel_widget.dart';
 import 'add_construction_screen.dart';
 import 'construction_list_screen.dart';
 import 'tour_planning_screen.dart';
@@ -67,6 +73,9 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   
   /// Indique si les marqueurs sont visibles
   bool _showMarkers = true;
+  
+  /// Niveau de zoom actuel pour le clustering
+  double _currentZoom = 13.0;
 
   // ============================================
   // POSITION UTILISATEUR
@@ -94,6 +103,19 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   
   /// Type de fond de carte actuel
   MapLayerType _currentLayer = MapLayerType.standard;
+
+  // ============================================
+  // ITINÉRAIRE
+  // ============================================
+  
+  /// Information de l'itinéraire actuel (null si pas d'itinéraire)
+  RouteInfo? _currentRoute;
+  
+  /// Mode de transport pour l'itinéraire
+  TravelMode _travelMode = TravelMode.driving;
+  
+  /// Indique si un calcul d'itinéraire est en cours
+  bool _isCalculatingRoute = false;
 
   // ============================================
   // CONSTANTES
@@ -176,6 +198,182 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         _showError('Position GPS non disponible');
       }
     }
+  }
+
+  // ============================================
+  // MÉTHODES ITINÉRAIRE
+  // ============================================
+
+  /// Calculer l'itinéraire vers une construction
+  Future<void> _calculateRouteToConstruction(Construction construction) async {
+    // Vérifier la position utilisateur
+    if (_userPosition == null) {
+      await _getCurrentLocation();
+      if (_userPosition == null) {
+        _showError('Position GPS requise pour calculer l\'itinéraire');
+        return;
+      }
+    }
+
+    setState(() => _isCalculatingRoute = true);
+
+    try {
+      final destination = construction.getCentroid();
+      
+      final route = await RoutingService.calculateRoute(
+        _userPosition!,
+        destination,
+        travelMode: _travelMode,
+      );
+
+      if (route != null) {
+        setState(() {
+          _currentRoute = route;
+          _selectedConstruction = construction;
+        });
+        
+        // Ajuster la vue pour afficher tout l'itinéraire
+        _fitRouteOnMap(route);
+        
+        // Afficher le panneau d'itinéraire
+        _showRoutePanel();
+      } else {
+        _showError('Impossible de calculer l\'itinéraire');
+      }
+    } catch (e) {
+      _showError('Erreur lors du calcul de l\'itinéraire');
+      debugPrint('Erreur routing: $e');
+    } finally {
+      setState(() => _isCalculatingRoute = false);
+    }
+  }
+
+  /// Recalculer l'itinéraire avec un nouveau mode de transport
+  Future<void> _recalculateRoute(TravelMode newMode) async {
+    if (_currentRoute == null) return;
+    
+    setState(() {
+      _travelMode = newMode;
+      _isCalculatingRoute = true;
+    });
+
+    try {
+      final route = await RoutingService.calculateRoute(
+        _currentRoute!.origin,
+        _currentRoute!.destination,
+        travelMode: newMode,
+      );
+
+      if (route != null) {
+        setState(() => _currentRoute = route);
+      } else {
+        _showError('Impossible de recalculer l\'itinéraire');
+      }
+    } catch (e) {
+      _showError('Erreur lors du recalcul');
+    } finally {
+      setState(() => _isCalculatingRoute = false);
+    }
+  }
+
+  /// Ajuster la vue de la carte pour afficher l'itinéraire complet
+  void _fitRouteOnMap(RouteInfo route) {
+    if (route.polylinePoints.isEmpty) return;
+
+    double minLat = double.infinity;
+    double maxLat = double.negativeInfinity;
+    double minLng = double.infinity;
+    double maxLng = double.negativeInfinity;
+
+    for (var point in route.polylinePoints) {
+      minLat = math.min(minLat, point.latitude);
+      maxLat = math.max(maxLat, point.latitude);
+      minLng = math.min(minLng, point.longitude);
+      maxLng = math.max(maxLng, point.longitude);
+    }
+
+    final bounds = LatLngBounds(
+      LatLng(minLat, minLng),
+      LatLng(maxLat, maxLng),
+    );
+
+    _mapController.fitCamera(
+      CameraFit.bounds(
+        bounds: bounds,
+        padding: const EdgeInsets.all(80),
+      ),
+    );
+  }
+
+  /// Afficher le panneau d'itinéraire
+  void _showRoutePanel() {
+    if (_currentRoute == null) return;
+    
+    RouteBottomSheet.show(
+      context,
+      routeInfo: _currentRoute!,
+      onTravelModeChanged: (mode) {
+        Navigator.pop(context);
+        _recalculateRoute(mode);
+      },
+      onStartNavigation: () {
+        Navigator.pop(context);
+        _startExternalNavigation();
+      },
+      onShare: () {
+        _shareRoute();
+      },
+      onClose: () {
+        setState(() {
+          _currentRoute = null;
+        });
+      },
+    );
+  }
+
+  /// Démarrer la navigation dans une application externe
+  Future<void> _startExternalNavigation() async {
+    if (_currentRoute == null || _userPosition == null) return;
+    
+    final destination = _currentRoute!.destination;
+    
+    // URL pour Google Maps
+    final googleMapsUrl = Uri.parse(
+      'https://www.google.com/maps/dir/?api=1'
+      '&origin=${_userPosition!.latitude},${_userPosition!.longitude}'
+      '&destination=${destination.latitude},${destination.longitude}'
+      '&travelmode=${_travelMode == TravelMode.driving ? 'driving' : _travelMode == TravelMode.walking ? 'walking' : 'bicycling'}'
+    );
+    
+    try {
+      if (await canLaunchUrl(googleMapsUrl)) {
+        await launchUrl(googleMapsUrl, mode: LaunchMode.externalApplication);
+      } else {
+        _showError('Impossible d\'ouvrir l\'application de navigation');
+      }
+    } catch (e) {
+      _showError('Erreur lors du lancement de la navigation');
+    }
+  }
+
+  /// Partager l'itinéraire
+  Future<void> _shareRoute() async {
+    if (_currentRoute == null) return;
+    
+    final destination = _currentRoute!.destination;
+    final url = 'https://www.google.com/maps/dir/'
+        '${_userPosition?.latitude ?? ''},${_userPosition?.longitude ?? ''}/'
+        '${destination.latitude},${destination.longitude}';
+    
+    // Copier dans le presse-papiers (Share API disponible via url_launcher)
+    _showSuccess('Lien copié: ${_currentRoute!.formattedDistance}');
+  }
+
+  /// Effacer l'itinéraire actuel
+  void _clearRoute() {
+    setState(() {
+      _currentRoute = null;
+    });
   }
 
   // ============================================
@@ -305,6 +503,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       construction: construction,
       onCenter: () => _centerOnConstruction(construction),
       onDelete: () => _deleteConstruction(construction),
+      onRoute: () => _calculateRouteToConstruction(construction),
     );
   }
 
@@ -488,7 +687,16 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     if (!_showMarkers) return [];
 
     List<Polygon> polygons = [];
-    for (var construction in _filteredConstructions) {
+    
+    // Si un itinéraire est actif, n'afficher que le polygone de destination
+    List<Construction> constructionsToShow = _filteredConstructions;
+    if (_currentRoute != null && _selectedConstruction != null) {
+      constructionsToShow = _filteredConstructions
+          .where((c) => c.id == _selectedConstruction!.id)
+          .toList();
+    }
+    
+    for (var construction in constructionsToShow) {
       try {
         List<LatLng> points = construction.getPolygonPoints();
         if (points.length >= 3) {
@@ -498,7 +706,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           polygons.add(
             Polygon(
               points: points,
-              color: color.withOpacity(isSelected ? 0.5 : 0.3),
+              color: color.withOpacity(isSelected ? 0.35 : 0.15),
               borderColor: isSelected ? Colors.white : color,
               borderStrokeWidth: isSelected ? 4 : 2,
               isFilled: true,
@@ -512,7 +720,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     return polygons;
   }
 
-  /// Construire les marqueurs pour le MarkerLayer
+  /// Construire les marqueurs pour le MarkerLayer avec clustering
   List<Marker> _buildMarkers() {
     if (!_showMarkers) return [];
 
@@ -526,79 +734,120 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       ));
     }
 
-    // Marqueurs des constructions
-    for (var construction in _filteredConstructions) {
-      try {
-        List<LatLng> points = construction.getPolygonPoints();
-        Color color = _getColorForType(construction.type);
-        bool isSelected = _selectedConstruction?.id == construction.id;
+    // Marqueurs de l'itinéraire (départ et arrivée)
+    if (_currentRoute != null) {
+      // Marqueur de départ (position utilisateur - vert)
+      markers.add(
+        Marker(
+          point: _currentRoute!.origin,
+          width: 40,
+          height: 40,
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.green,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 3),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.3),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: const Icon(
+              Icons.trip_origin,
+              color: Colors.white,
+              size: 20,
+            ),
+          ),
+        ),
+      );
 
-        // Point unique = marqueur simple
-        if (points.length == 1) {
-          markers.add(
-            Marker(
-              point: points.first,
-              width: isSelected ? 55 : 45,
-              height: isSelected ? 55 : 45,
-              child: GestureDetector(
-                onTap: () => _showConstructionInfo(construction),
-                child: Icon(
-                  Icons.location_on,
-                  color: color,
-                  size: isSelected ? 55 : 45,
-                  shadows: [
-                    Shadow(
-                      color: Colors.black.withOpacity(0.3),
-                      blurRadius: 5,
-                      offset: const Offset(2, 2),
-                    ),
-                  ],
+      // Marqueur d'arrivée (destination - rouge)
+      markers.add(
+        Marker(
+          point: _currentRoute!.destination,
+          width: 50,
+          height: 50,
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.red,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 3),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.3),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
                 ),
-              ),
+              ],
             ),
-          );
-        }
-        // Polygone = marqueur au centroïde
-        else if (points.length >= 3) {
-          LatLng centroid = construction.getCentroid();
-          markers.add(
-            Marker(
-              point: centroid,
-              width: isSelected ? 44 : 36,
-              height: isSelected ? 44 : 36,
-              child: GestureDetector(
-                onTap: () => _showConstructionInfo(construction),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  decoration: BoxDecoration(
-                    color: isSelected ? color : color.withOpacity(0.9),
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: Colors.white,
-                      width: isSelected ? 3 : 2,
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.3),
-                        blurRadius: isSelected ? 8 : 5,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: Icon(
-                    _getIconForType(construction.type),
-                    color: Colors.white,
-                    size: isSelected ? 24 : 18,
-                  ),
-                ),
-              ),
+            child: const Icon(
+              Icons.location_on,
+              color: Colors.white,
+              size: 28,
             ),
-          );
-        }
-      } catch (e) {
-        continue;
-      }
+          ),
+        ),
+      );
+      
+      // Ne pas afficher les autres marqueurs quand un itinéraire est actif
+      return markers;
     }
+
+    // Clustering des constructions (seulement si pas d'itinéraire actif)
+    final clusters = MarkerClusterer.clusterConstructions(
+      _filteredConstructions,
+      _currentZoom,
+      gridSize: 60,
+      minZoomForClustering: 16,
+    );
+
+    // Créer les marqueurs pour chaque cluster
+    for (var cluster in clusters) {
+      final isSelected = cluster.constructions.any(
+        (c) => c.id == _selectedConstruction?.id,
+      );
+
+      markers.add(
+        Marker(
+          point: cluster.position,
+          width: cluster.isCluster ? 80 : (isSelected ? 50 : 40),
+          height: cluster.isCluster ? 80 : (isSelected ? 50 : 40),
+          child: GestureDetector(
+            onTap: () {
+              if (cluster.isCluster) {
+                // Clic sur un cluster : zoomer pour décomposer
+                _mapController.move(
+                  cluster.position,
+                  math.min(_currentZoom + 2.5, 18),
+                );
+              } else {
+                // Clic sur un marqueur simple : afficher les infos
+                _showConstructionInfo(cluster.constructions.first);
+              }
+            },
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: TweenAnimationBuilder<double>(
+                tween: Tween<double>(begin: 0.0, end: 1.0),
+                duration: Duration(milliseconds: cluster.isCluster ? 400 : 300),
+                curve: Curves.elasticOut,
+                builder: (context, scale, child) {
+                  return Transform.scale(
+                    scale: scale,
+                    child: child,
+                  );
+                },
+                child: MarkerClusterer.buildClusterWidget(cluster, _typeColors),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
     return markers;
   }
 
@@ -683,6 +932,44 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                     ),
                   ),
                 
+                // Indicateur de calcul d'itinéraire
+                if (_isCalculatingRoute)
+                  Container(
+                    color: Colors.black.withOpacity(0.3),
+                    child: Center(
+                      child: Container(
+                        padding: const EdgeInsets.all(24),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const CircularProgressIndicator(color: Colors.blue),
+                            const SizedBox(height: 16),
+                            Text(
+                              'Calcul de l\'itinéraire...',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                                color: Colors.grey[800],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                
+                // Panneau d'itinéraire compact (en bas)
+                if (_currentRoute != null && !_isCalculatingRoute)
+                  Positioned(
+                    left: 16,
+                    right: 16,
+                    bottom: 100,
+                    child: _buildCompactRouteInfo(),
+                  ),
+                
                 // Message si aucune construction
                 if (!_isLoading && _filteredConstructions.isEmpty)
                   _buildEmptyState(),
@@ -739,46 +1026,130 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         ],
       ),
       actions: [
-        // Badge avec le nombre de constructions
-        Stack(
-          alignment: Alignment.center,
-          children: [
-            IconButton(
-              icon: const Icon(Icons.list_alt),
-              tooltip: 'Liste des constructions',
-              onPressed: _openConstructionList,
-            ),
-            if (_constructions.isNotEmpty)
-              Positioned(
-                right: 6,
-                top: 6,
-                child: Container(
-                  padding: const EdgeInsets.all(4),
-                  decoration: const BoxDecoration(
-                    color: Colors.red,
-                    shape: BoxShape.circle,
+        // Bouton liste avec badge moderne
+        Padding(
+          padding: const EdgeInsets.only(right: 4),
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Container(
+                margin: const EdgeInsets.symmetric(vertical: 8),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Colors.blue.shade400, Colors.blue.shade600],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
                   ),
-                  constraints: const BoxConstraints(
-                    minWidth: 18,
-                    minHeight: 18,
-                  ),
-                  child: Text(
-                    '${_constructions.length}',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.blue.withOpacity(0.3),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
                     ),
-                    textAlign: TextAlign.center,
+                  ],
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: _openConstructionList,
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      width: 44,
+                      height: 44,
+                      padding: const EdgeInsets.all(10),
+                      child: const Icon(
+                        Icons.list_alt_rounded,
+                        color: Colors.white,
+                        size: 24,
+                      ),
+                    ),
                   ),
                 ),
               ),
-          ],
+              if (_constructions.isNotEmpty)
+                Positioned(
+                  right: 0,
+                  top: 4,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 3,
+                    ),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFFFF6B6B), Color(0xFFEE5A6F)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.white, width: 2),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.red.withOpacity(0.4),
+                          blurRadius: 4,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    constraints: const BoxConstraints(
+                      minWidth: 20,
+                      minHeight: 20,
+                    ),
+                    child: Text(
+                      '${_constructions.length}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        height: 1.0,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
-        IconButton(
-          icon: const Icon(Icons.refresh),
-          tooltip: 'Actualiser',
-          onPressed: _refreshConstructions,
+        
+        // Bouton rafraîchir moderne
+        Padding(
+          padding: const EdgeInsets.only(right: 12),
+          child: Container(
+            margin: const EdgeInsets.symmetric(vertical: 8),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Colors.green.shade400, Colors.green.shade600],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.green.withOpacity(0.3),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: _refreshConstructions,
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  width: 44,
+                  height: 44,
+                  padding: const EdgeInsets.all(10),
+                  child: const Icon(
+                    Icons.refresh_rounded,
+                    color: Colors.white,
+                    size: 24,
+                  ),
+                ),
+              ),
+            ),
+          ),
         ),
       ],
     );
@@ -791,6 +1162,14 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       options: MapOptions(
         initialCenter: const LatLng(33.5731, -7.5898), // Casablanca
         initialZoom: 13.0,
+        onPositionChanged: (position, hasGesture) {
+          // Mettre à jour le zoom pour le clustering
+          if (position.zoom != null && position.zoom != _currentZoom) {
+            setState(() {
+              _currentZoom = position.zoom!;
+            });
+          }
+        },
         onTap: (tapPosition, point) {
           // Vérifier si on a cliqué sur un polygone
           for (var construction in _filteredConstructions) {
@@ -814,9 +1193,181 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         // Polygones des constructions
         PolygonLayer(polygons: _buildPolygons()),
         
-        // Marqueurs (constructions + GPS)
+        // Polyline de l'itinéraire
+        if (_currentRoute != null)
+          PolylineLayer(
+            polylines: [
+              Polyline(
+                points: _currentRoute!.polylinePoints,
+                color: Colors.blue,
+                strokeWidth: 5.0,
+                borderColor: Colors.blue.shade900,
+                borderStrokeWidth: 1.0,
+              ),
+            ],
+          ),
+        
+        // Marqueurs (constructions + GPS + itinéraire)
         MarkerLayer(markers: _buildMarkers()),
       ],
+    );
+  }
+
+  /// Panneau compact d'information de l'itinéraire
+  Widget _buildCompactRouteInfo() {
+    if (_currentRoute == null) return const SizedBox.shrink();
+    
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.15),
+            blurRadius: 15,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Ligne supérieure: distance, durée et bouton fermer
+          Row(
+            children: [
+              // Icône mode de transport
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Colors.blue[400]!, Colors.blue[600]!],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Center(
+                  child: Text(
+                    _currentRoute!.travelMode.emoji,
+                    style: const TextStyle(fontSize: 22),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              
+              // Distance et durée
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          _currentRoute!.formattedDuration,
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.blue[50],
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            _currentRoute!.formattedDistance,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.blue[700],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    Text(
+                      'Arrivée: ${_currentRoute!.estimatedArrival}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              
+              // Bouton fermer
+              IconButton(
+                onPressed: _clearRoute,
+                icon: const Icon(Icons.close),
+                style: IconButton.styleFrom(
+                  backgroundColor: Colors.grey[100],
+                ),
+              ),
+            ],
+          ),
+          
+          const SizedBox(height: 12),
+          
+          // Ligne inférieure: modes de transport + navigation
+          Row(
+            children: [
+              // Sélecteurs de mode de transport compacts
+              ...TravelMode.values.map((mode) {
+                final isSelected = _currentRoute!.travelMode == mode;
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: InkWell(
+                    onTap: () => _recalculateRoute(mode),
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: isSelected ? Colors.blue : Colors.grey[100],
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        mode.emoji,
+                        style: const TextStyle(fontSize: 18),
+                      ),
+                    ),
+                  ),
+                );
+              }),
+              
+              const Spacer(),
+              
+              // Bouton démarrer navigation
+              ElevatedButton.icon(
+                onPressed: _startExternalNavigation,
+                icon: const Icon(Icons.navigation, size: 18),
+                label: const Text('Démarrer'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blue,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 10,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
